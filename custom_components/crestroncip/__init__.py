@@ -21,10 +21,9 @@ from homeassistant.const import (
     CONF_SERVICE,
     CONF_SERVICE_DATA,
 )
-
 from .crestron import CrestronXsig
 from .const import CONF_PORT, HUB, DOMAIN, CONF_JOIN, CONF_SCRIPT, CONF_TO_HUB, CONF_FROM_HUB
-#from .control_surface_sync import ControlSurfaceSync
+
 
 _LOGGER = logging.getLogger(__name__)
 
