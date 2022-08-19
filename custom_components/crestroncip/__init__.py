@@ -96,50 +96,12 @@ class CrestronHub:
             self.ip, self.ip_id)
         self.context = Context()
         self.to_hub = {}
-        # self.hub.register_sync_all_joins_callback(self.sync_joins_to_hub)
-        # 配置文件解析？
-        # to_hub: to_joins
-        if CONF_TO_HUB in config:
-            pass
-            # track_templates = []
-            # for entity in config[CONF_TO_HUB]:
-            #     template_string = None
-            #     if CONF_VALUE_TEMPLATE in entity:
-            #         template = entity[CONF_VALUE_TEMPLATE]
-            #         self.to_hub[entity[CONF_JOIN]] = template
-            #         track_templates.append(TrackTemplate(template, None))
-            #     elif CONF_ATTRIBUTE in entity and CONF_ENTITY_ID in entity:
-            #         template_string = (
-            #             "{{state_attr('"
-            #             + entity[CONF_ENTITY_ID]
-            #             + "','"
-            #             + entity[CONF_ATTRIBUTE]
-            #             + "')}}"
-            #         )
-            #         template = Template(template_string, hass)
-            #         self.to_hub[entity[CONF_JOIN]] = template
-            #         track_templates.append(TrackTemplate(template, None))
-            #     elif CONF_ENTITY_ID in entity:
-            #         template_string = "{{states('" + \
-            #             entity[CONF_ENTITY_ID] + "')}}"
-            #         template = Template(template_string, hass)
-            #         self.to_hub[entity[CONF_JOIN]] = template
-            #         track_templates.append(TrackTemplate(template, None))
-            # self.tracker = async_track_template_result(
-            #     self.hass, track_templates, self.template_change_callback
-            # )
-        # 注册回调？
-        if CONF_FROM_HUB in config:
-            self.from_hub = config[CONF_FROM_HUB]
-            # self.hub.register_callback(self.join_change_callback)
 
     def start(self):
         self.cip_client.start()
 
     def stop(self, event):
         """ remove callback(s) and template trackers """
-        # self.hub.remove_callback(self.join_change_callback)
-        # self.tracker.async_remove()
         self.cip_client.stop()
 
     async def join_change_callback(self, sigtype, join, value):
