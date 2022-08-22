@@ -43,7 +43,7 @@ class CrestronSwitch(SwitchEntity):
 
     def process_callback(self, sigtype, join, value):
         self._state = value
-        _LOGGER.info(f"switch state: {value}")
+        # _LOGGER.info(f"switch state: {value}")
         self.async_write_ha_state()
 
     @property
