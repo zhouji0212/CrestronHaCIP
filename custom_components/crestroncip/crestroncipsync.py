@@ -273,11 +273,12 @@ class CIPSocketClient:
         "s": b"\x12\x00\x00\x00\x00\x00\x00\x34",  # serial join
     }
 
-    def __init__(self, host, ipid, port=41794, timeout=2):
+    def __init__(self, host, ip_id, room_id="", port=41794, timeout=2):
         """Set up CIP client instance."""
         self.host = host
-        self.ipid = ipid.to_bytes(length=1, byteorder="big")
+        self.ip_id = ip_id.to_bytes(length=1, byteorder="big")
         self.port = port
+        self.room_id = str.upper(room_id)
         self.timeout = timeout
         self.socket = None
         self.connected = False
@@ -376,7 +377,7 @@ class CIPSocketClient:
         if self.connected is True:
             self.tx_queue.put(b"\x05\x00\x05\x00\x00\x02\x03\x00")
         else:
-            _logger.dself.joinforebug(
+            _logger.debug(
                 "update_request(): not currently connected")
 
     def subscribe(self, sigtype, join, callback, direction="in"):
@@ -483,32 +484,68 @@ class CIPSocketClient:
         elif ciptype == 0x0F:
             # registration request
             _logger.debug("  Client registration request")
-            tx = (
-                b"\x01\x00\x0b\x00\x00\x00\x00\x00"
-                + self.ipid
-                + b"\x40\xff\xff\xf1\x01"
-            )
-            self.tx_queue.put(tx)
+            if self.room_id == "":
+                tx = (
+                    b"\x01\x00\x0b\x00\x00\x00\x00\x00"
+                    + self.ip_id
+                    + b"\x40\xff\xff\xf1\x01"
+                )
+                self.tx_queue.put(tx)
+            else:
+                room_bytes = bytearray(f"{self.room_id}", "ascii")
+                tx = (
+                    b"\x26\x00\xd5\x00"
+                    + self.ip_id
+                    + b"\x40\xf1\x01\x00\x00\x00\x01"
+                    + b"\xff\xff\xff\xff\xff\xff"  # mac add
+                    + bytearray("Crestron", "ascii")
+                    + b"\x00"*42
+                    + bytearray("XPanel", "ascii")
+                    + b"\x00"*44
+                    + room_bytes
+                    + b"\x00"*(32-len(room_bytes))
+                    + bytearray("XPanel -FF-FF-FF-FF-FF-FF", "ascii")
+                    + b"\x00"*41
+                )
+                self.tx_queue.put(tx)
         elif ciptype == 0x02:
             # registration result
-            ipid_string = str(binascii.hexlify(self.ipid), "ascii")
+            ip_id_string = str(binascii.hexlify(self.ip_id), "ascii")
 
             if length == 3 and payload == b"\xff\xff\x02":
                 _logger.error(
-                    f"! The specified IPID (0x{ipid_string}) does not exist")
+                    f"! The specified IPID (0x{ip_id_string}) does not exist")
                 restartRequired = True
             elif length == 4 and payload == b"\x00\x00\x00\x1f":
-                _logger.debug(f"  Registered IPID 0x{ipid_string}")
+                _logger.debug(f"  Registered IPID 0x{ip_id_string}")
+                # 0500050000020300 send query
                 self.tx_queue.put(b"\x05\x00\x05\x00\x00\x02\x03\x00")
             else:
-                _logger.error(f"! Error registering IPID 0x{ipid_string}")
+                _logger.error(f"! Error registering IPID 0x{ip_id_string}")
                 restartRequired = True
         elif ciptype == 0x03:
             # control system disconnect
             _logger.debug("! Control system disconnect")
             restartRequired = True
+        elif ciptype == 0x27:
+            # registration result
+            ip_id_string = str(binascii.hexlify(self.ip_id), "ascii")
+            # _logger.debug(f"lenth:{len(payload)}__{payload[0:4]}")
+            if length == 38 and payload[0:3] == b"\xff\xff\x02":
+                _logger.error(
+                    f"! The specified IPID (0x{ip_id_string}) does not exist")
+                restartRequired = True
+            elif length == 38 and payload[0:4] == b"\x00\x00\x00\x1f":
+                _logger.debug(f"  Registered IPID 0x{ip_id_string}")
+                # 0500050000020300 send query
+                self.tx_queue.put(b"\x05\x00\x05\x00\x00\x02\x03\x00")
+            else:
+                _logger.error(f"! Error registering IPID 0x{ip_id_string}")
+                restartRequired = True
         else:
             # unexpected packet
+            # 27 00 26 00 01 00 1F 00 00 00 08 56 43 2D 34 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
             _logger.debug("! We don't know what to do with this packet")
 
         if restartRequired:
