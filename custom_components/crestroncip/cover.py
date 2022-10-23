@@ -28,14 +28,14 @@ from .const import (
     CONF_STOP_JOIN,
     CONF_POS_JOIN,
 )
-
+from .crestroncipsync import CIPSocketClient
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORM_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_NAME): cv.string,
         vol.Required(CONF_TYPE): cv.string,
-        vol.Required(CONF_POS_JOIN): cv.positive_int,           
+        vol.Required(CONF_POS_JOIN): cv.positive_int,
         vol.Required(CONF_IS_OPENING_JOIN): cv.positive_int,
         vol.Required(CONF_IS_CLOSING_JOIN): cv.positive_int,
         vol.Required(CONF_IS_CLOSED_JOIN): cv.positive_int,
@@ -44,14 +44,16 @@ PLATFORM_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
 )
 
+
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     hub = hass.data[DOMAIN][HUB]
     entity = [CrestronShade(hub, config)]
     async_add_entities(entity)
 
+
 class CrestronShade(CoverEntity):
-    def __init__(self, hub, config):
-        self._hub = hub
+    def __init__(self, client: CIPSocketClient, config):
+        self._hub = client
         if config.get(CONF_TYPE) == "shade":
             self._device_class = DEVICE_CLASS_SHADE
             self._supported_features = (
@@ -65,6 +67,14 @@ class CrestronShade(CoverEntity):
         self._is_closed_join = config.get(CONF_IS_CLOSED_JOIN)
         self._stop_join = config.get(CONF_STOP_JOIN)
         self._pos_join = config.get(CONF_POS_JOIN)
+        self._tilt_join = 10
+        self._current_cover_position = self._hub.get_analog(
+            self._pos_join)
+        self._current_cover_tilt_position = self._hub.get_analog(
+            self._tilt_join)
+        self._is_closed = self._hub.get_digital(self._is_closed_join)
+        self._is_opening = self._hub.get_digital(self._is_opening_join)
+        self._is_closing = self._hub.get_digital(self._is_closing_join)
 
     async def async_added_to_hass(self):
         self._hub.register_callback(self.process_callback)
@@ -96,20 +106,24 @@ class CrestronShade(CoverEntity):
         return self._should_poll
 
     @property
+    def current_cover_tilt_position(self):
+        return self._current_cover_tilt_position
+
+    @property
     def current_cover_position(self):
-        return self._hub.get_analog(self._pos_join) / 655.35
+        return self._current_cover_position
 
     @property
     def is_opening(self):
-        return self._hub.get_digital(self._is_opening_join)
+        return self._is_opening
 
     @property
     def is_closing(self):
-        return self._hub.get_digital(self._is_closing_join)
+        return self._is_closing
 
     @property
     def is_closed(self):
-        return self._hub.get_digital(self._is_closed_join)
+        return self._is_closed
 
     async def async_set_cover_position(self, **kwargs):
         self._hub.set_analog(self._pos_join, int(kwargs["position"]) * 655)

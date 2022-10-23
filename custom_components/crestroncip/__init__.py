@@ -1,6 +1,7 @@
 """The Crestron Integration Component"""
 
-from .const import CONF_IP, CONF_IPID, CONF_PORT, HUB, DOMAIN, CONF_JOIN, CONF_SCRIPT, CONF_TO_HUB, CONF_FROM_HUB
+from .const import (CONF_IP, CONF_IPID, CONF_ROOMID, CONF_PORT,
+                    HUB, DOMAIN, CONF_JOIN, CONF_SCRIPT, CONF_TO_HUB, CONF_FROM_HUB)
 import asyncio
 import logging
 
@@ -25,7 +26,6 @@ from homeassistant.const import (
 )
 
 from.crestroncipsync import *
-#from .control_surface_sync import ControlSurfaceSync
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +52,7 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Required(CONF_IP): cv.string,
                 vol.Required(CONF_PORT): cv.port,
                 vol.Required(CONF_IPID): cv.port,
+                vol.Optional(CONF_ROOMID, default=""): cv.string,
                 vol.Optional(CONF_TO_HUB): vol.All(cv.ensure_list, [TO_JOINS_SCHEMA]),
                 vol.Optional(CONF_FROM_HUB): vol.All(cv.ensure_list, [FROM_JOINS_SCHEMA])
             }
@@ -66,7 +67,7 @@ PLATFORMS = [
     "switch",
     "light",
     # "climate",
-    # "cover",
+    "cover",
     # "media_player",
 ]
 
@@ -92,8 +93,9 @@ class CrestronHub:
         self.port = config.get(CONF_PORT)
         self.ip = config.get(CONF_IP)
         self.ip_id = config.get(CONF_IPID)
+        self.room_id = config.get(CONF_ROOMID)
         self.cip_client = hass.data[DOMAIN][HUB] = CIPSocketClient(
-            self.ip, self.ip_id)
+            self.ip, self.ip_id, room_id=self.room_id)
         self.context = Context()
         self.to_hub = {}
         # self.hub.register_sync_all_joins_callback(self.sync_joins_to_hub)
