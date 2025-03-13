@@ -1,0 +1,9 @@
+{
+  "domain": "crestroncip",
+  "name": "Crestron CIP Integraton",
+  "documentation": "",
+  "dependencies": [],
+  "codeowners": ["jack_zhou"],
+  "requirements": [],
+  "version":"0.1.0"
+}
