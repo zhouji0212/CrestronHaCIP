@@ -1,22 +1,7 @@
-# CrestronHaCIP
-
-## Crestron Connect To Homeassistant Use Crestron-over-IP (CIP) Protocol.
-
-this project is mix from npop-crestron-homeassistant component(https://github.com/npope/home-assistant-crestron-component)
-
-and klenae's Python CIP Protocol(https://github.com/klenae/python-cipclient)
-Support switch、single dimmer、colortemp and rgbw color
-Update Support OpenClose Cover
-### 2025.3.10 Update
-support Homeassistant 2023.3.0
-### Use Demo:
-
-##### Edit the config.yaml like this:
-
 crestroncip:
-  ip: 192.168.1.1
-  port: 41794
-  ipid: 0x03
+  ip: crestron_host_ip like 192.168.1.1
+  port: cip port default 41794
+  ipid: cip ip_ip like 0x03
 
 switch:
   - platform: crestroncip

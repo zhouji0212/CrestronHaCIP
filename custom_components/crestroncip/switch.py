@@ -58,8 +58,10 @@ class CrestronSwitch(SwitchEntity):
 
     async def async_turn_on(self, **kwargs):
         self._hub.pulse(self._switch_join_on)
-        # self.schedule_update_ha_state()
+        self._attr_is_on = True
+        self.schedule_update_ha_state()
 
     async def async_turn_off(self, **kwargs):
         self._hub.pulse(self._switch_join_off)
-        # await self.async_update_ha_state()
+        self._attr_is_on = False
+        self.schedule_update_ha_state()

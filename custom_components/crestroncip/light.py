@@ -167,12 +167,17 @@ class BrightnessLight(CrestronLightBase):
         await self._hub.remove_callback("a", self._brightness_fb_join)
 
     async def async_turn_on(self, **kwargs):
+        _LOGGER.debug(f"Turn on:{kwargs}")
         if ATTR_BRIGHTNESS in kwargs:
+            self._attr_brightness = kwargs[ATTR_BRIGHTNESS]
+            if bool(self._attr_brightness):
+                self._attr_is_on = True
             self._hub.set_analog(self._brightness_join, int(
                 kwargs[ATTR_BRIGHTNESS]*65535/255))
         else:
             if not bool(self._attr_brightness):
                 self._hub.set_analog(self._brightness_join, 65535)
+        self.schedule_update_ha_state()
 
     async def async_turn_off(self, **kwargs):
         self._hub.set_analog(self._brightness_join, 0)
@@ -206,12 +211,13 @@ class ColorTempLight(BrightnessLight):
         await self._hub.remove_callback("a", self._color_temp_fb_join)
 
     async def async_turn_on(self, **kwargs):
-        await super().async_turn_on(**kwargs)
         if ATTR_COLOR_TEMP_KELVIN in kwargs:
             self._hub.set_analog(
                 self._color_temp_join,
                 int(kwargs[ATTR_COLOR_TEMP_KELVIN])
             )
+            self._attr_color_temp_kelvin = int(kwargs[ATTR_COLOR_TEMP_KELVIN])
+        await super().async_turn_on(**kwargs)
 
     async def async_turn_off(self, **kwargs):
         await super().async_turn_off(**kwargs)
