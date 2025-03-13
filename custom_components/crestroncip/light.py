@@ -1,212 +1,273 @@
 """Platform for Crestron Light integration."""
+import asyncio
+from collections import defaultdict
 import voluptuous as vol
 import logging
-import math
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 from homeassistant.components.light import (
     LightEntity,
-    SUPPORT_BRIGHTNESS,
-    SUPPORT_COLOR_TEMP,
-    SUPPORT_COLOR,
-    COLOR_MODE_BRIGHTNESS,
-    COLOR_MODE_COLOR_TEMP,
-    COLOR_MODE_HS,)
+    ColorMode,
+    ATTR_BRIGHTNESS,
+    ATTR_EFFECT,
+    ATTR_COLOR_TEMP_KELVIN,
+    ATTR_RGB_COLOR,
+    ATTR_RGBW_COLOR,
+    ATTR_RGBWW_COLOR,
+    ATTR_XY_COLOR)
+from homeassistant.components.light.const import LightEntityFeature
 from homeassistant.const import CONF_NAME, CONF_TYPE
 from .const import (
     HUB,
     DOMAIN,
     CONF_BRIGHTNESS_JOIN,
+    CONF_BRIGHTNESS_FB_JOIN,
+    CONF_SWITCH_ON_JOIN,
+    CONF_SWITCH_OFF_JOIN,
+    CONF_SWITCH_FB_JOIN,
     CONF_COLOR_TEMP_JOIN,
-    CONF_COLOR_H_JOIN,
-    CONF_COLOR_S_JOIN)
-from .crestroncipsync import CIPSocketClient
+    CONF_COLOR_TEMP_FB_JOIN,
+    CONF_COLOR_COOL_JOIN,
+    CONF_COLOR_WARM_JOIN,
+    CONF_COLOR_TEMP_MAX,
+    CONF_COLOR_TEMP_MIN,
+    CONF_LIGHTS)
+from . import XPanelClient
 from homeassistant.util import color
-CONF_BRIGHT = "brightness"
-CONF_COLOR_HS = "color_hs"
-CONF_COLOR_TEMP = "color_temp"
 _LOGGER = logging.getLogger(__name__)
+CONF_SWITCH = "switch"
+CONF_BRIGHTNESS = "brightness"
+CONF_COLOR_TEMP = "color_temp"
+
+
+
+CONF_SUPPORT_COLOR_MODES_MAP = {
+    CONF_SWITCH: set([ColorMode.ONOFF,]),
+    CONF_BRIGHTNESS: set([ColorMode.BRIGHTNESS,]),
+    CONF_COLOR_TEMP: set([ColorMode.COLOR_TEMP,]),
+}
+CONF_COLOR_MODE_MAP = {
+    CONF_SWITCH: ColorMode.ONOFF,
+    CONF_BRIGHTNESS: ColorMode.BRIGHTNESS,
+    CONF_COLOR_TEMP: ColorMode.COLOR_TEMP,
+}
+
 
 PLATFORM_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_NAME): cv.string,
         vol.Required(CONF_TYPE): cv.string,
-        vol.Required(CONF_BRIGHTNESS_JOIN): cv.positive_int,
+        vol.Optional(CONF_SWITCH_ON_JOIN): cv.positive_int,
+        vol.Optional(CONF_SWITCH_OFF_JOIN): cv.positive_int,
+        vol.Optional(CONF_SWITCH_FB_JOIN): cv.positive_int,
+        vol.Optional(CONF_BRIGHTNESS_JOIN): cv.positive_int,
+        vol.Optional(CONF_BRIGHTNESS_FB_JOIN): cv.positive_int,
         vol.Optional(CONF_COLOR_TEMP_JOIN): cv.positive_int,
-        vol.Optional(CONF_COLOR_H_JOIN): cv.positive_int,
-        vol.Optional(CONF_COLOR_S_JOIN): cv.positive_int
+        vol.Optional(CONF_COLOR_TEMP_FB_JOIN): cv.positive_int,
+        vol.Optional(CONF_COLOR_COOL_JOIN): cv.positive_int,
+        vol.Optional(CONF_COLOR_WARM_JOIN): cv.positive_int,
+        vol.Optional(CONF_COLOR_TEMP_MAX): cv.positive_int,
+        vol.Optional(CONF_COLOR_TEMP_MIN): cv.positive_int,
     },
     extra=vol.ALLOW_EXTRA,
 )
 
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    hub = hass.data[DOMAIN][HUB]
-    entity = [CrestronLight(hub, config)]
-    async_add_entities(entity)
+def scale_color_temp_to_brightness(channelvalue: tuple, brightness) -> list:
+    _LOGGER.info(f"ChannelValue:{channelvalue}")
+    brightness_scale = (brightness / 255)
+    scaled_ct = []
+    for t in channelvalue:
+        scaled_ct.append(round(t * brightness_scale))
+    return scaled_ct
 
 
-class CrestronLight(LightEntity):
-    def __init__(self, client: CIPSocketClient, config):
+def scale_color_to_brightness(color: tuple, brightness) -> list:
+    """color:(255,255,255),brightness:255"""
+    brightness_scale = (brightness / 255)
+    scaled_color = []
+    for c in color:
+        scaled_color.append(c * brightness_scale)
+    return scaled_color
 
-        self._supported_features = SUPPORT_BRIGHTNESS
-        self._supported_colormodes = set([COLOR_MODE_BRIGHTNESS])
-        self._color_mode = COLOR_MODE_BRIGHTNESS
+
+def scale_255_to_65535(value: int):
+    if value <= 0:
+        return 0
+    return int(value*65535/255)
+
+
+def scale_65535_to_255(value: int):
+    if value <= 0:
+        return 0
+    return int(value*255/65535)
+
+
+def calc_dali_short_addr(short_addr: int) -> tuple[int, int]:
+    if short_addr > 79:
+        short_addr = 127
+    return ((short_addr << 1), (short_addr << 1) | 1)
+
+
+class CrestronLightBase(LightEntity):
+    def __init__(self, client: XPanelClient, config: ConfigType, device_type: str) -> None:
+        self._attr_name = config.get(CONF_NAME)
+        self._type = device_type
+        self._attr_unique_id = f"{self._attr_name}_{self._type}"
+        self._attr_is_on = False
+        self._attr_brightness = 0
+        self._saved_brightness = 255
         self._hub = client
-        self._name = config.get(CONF_NAME)
-        self._type = config.get(CONF_TYPE)
-        self._brightness_join = config.get(CONF_BRIGHTNESS_JOIN)
-        # self._brightness_join = self._hub.get_analog()
-        self._brightness = self._hub.get_analog(self._brightness_join)
-        self._color_temp_join = 0
-        self._color_temp_min = color.color_temperature_kelvin_to_mired(6000)
-        self._color_temp_max = color.color_temperature_kelvin_to_mired(3000)
-        self._color_h_join = 0
-        self._color_s_join = 0
-        self._color_hs = (0, 0)
-        _LOGGER.debug(f"{self._name},{self._type},{self._brightness_join}")
-        if self._type == CONF_BRIGHT:
-            self._supported_features = SUPPORT_BRIGHTNESS
-        elif self._type == CONF_COLOR_TEMP:
-            self._supported_features = (
-                SUPPORT_BRIGHTNESS | SUPPORT_COLOR_TEMP)
-            self._color_temp_join = config.get(CONF_COLOR_TEMP_JOIN)
-            self._supported_colormodes = set(
-                [COLOR_MODE_COLOR_TEMP, COLOR_MODE_BRIGHTNESS])
-            self._color_mode = COLOR_MODE_COLOR_TEMP
-            self._color_temp = self._hub.get_analog(self._color_temp_join)
-        elif self._type == CONF_COLOR_HS:
-            self._supported_features = (
-                SUPPORT_BRIGHTNESS | SUPPORT_COLOR)
-            self._supported_colormodes = set(
-                [COLOR_MODE_HS, COLOR_MODE_BRIGHTNESS])
-            self._color_mode = COLOR_MODE_HS
-            self._color_h_join = config.get(CONF_COLOR_H_JOIN)
-            self._color_s_join = config.get(CONF_COLOR_S_JOIN)
-            self._color_h = self._hub.get_analog(self._color_h_join)
-            self._color_s = self._hub.get_analog(self._color_h_join)
+        # self._attr_supported_features = CONF_SUPPORT_MAP.get(self._type)
+        self._attr_supported_color_modes = CONF_SUPPORT_COLOR_MODES_MAP.get(
+            self._type)
+        self._attr_color_mode = CONF_COLOR_MODE_MAP.get(self._type)
+        self._attr_extra_state_attributes = {}
+        _LOGGER.debug(
+            f"{self._attr_name},{self._type} {self._attr_color_mode} {self._attr_supported_color_modes} init")
 
-        self._save_brightness = 100
+
+class SwitchLight(CrestronLightBase):
+    def __init__(self, client: XPanelClient, config, device_type: str):
+        super().__init__(client, config, device_type)
+        self._switch_join_on = config.get(CONF_SWITCH_ON_JOIN)
+        self._switch_join_off = config.get(CONF_SWITCH_OFF_JOIN)
+        self._switch_join_fb = config.get(CONF_SWITCH_FB_JOIN)
+        self._state = client.get_digital(self._switch_join_fb)
+        self._attr_unique_id = f"{self._attr_unique_id}_{self._switch_join_on}"
 
     async def async_added_to_hass(self):
-        if self._type == CONF_COLOR_TEMP:
-            self._hub.register_callback(
-                "a", self._color_temp_join, self.process_color_temp_callback
-            )
-        if self._type == CONF_COLOR_HS:
-            self._hub.register_callback(
-                "a", self._color_h_join, self.process_color_callback
-            )
-            self._hub.register_callback(
-                "a", self._color_s_join, self.process_color_callback
-            )
+        await self._hub.register_callback(
+            "d", self._switch_join_fb, self.process_switch_callback)
 
-        self._hub.register_callback(
-            "a", self._brightness_join, self.process_bright_callback
+    async def async_will_remove_from_hass(self):
+        await self._hub.remove_callback("d", self._switch_join_fb)
+
+    async def async_turn_on(self, **kwargs):
+        self._hub.pulse(self._switch_join_on)
+
+    async def async_turn_off(self, **kwargs):
+        self._hub.pulse(self._switch_join_off)
+
+    def process_switch_callback(self, sigtype, join, value):
+        self._attr_is_on = bool(value)
+        self.schedule_update_ha_state()
+
+
+class BrightnessLight(CrestronLightBase):
+
+    def __init__(self, client: XPanelClient, config: ConfigType, device_type: str):
+        super().__init__(client, config, device_type)
+        self._brightness_join = config.get(CONF_BRIGHTNESS_JOIN)
+        self._brightness_fb_join = config.get(CONF_BRIGHTNESS_FB_JOIN)
+        self._attr_unique_id = f"{self._attr_unique_id}_{self._brightness_join}"
+        self._attr_brightness = self._hub.get_analog(
+            self._brightness_fb_join)*255/65535
+        self._attr_is_on = bool(self._attr_brightness)
+
+    async def async_added_to_hass(self):
+        await self._hub.register_callback(
+            "a", self._brightness_fb_join, self.process_bright_callback
         )
 
     async def async_will_remove_from_hass(self):
-        self._hub.remove_callback("a", self._brightness_join)
-        if self._type == CONF_COLOR_TEMP:
-            self._hub.remove_callback("a", self._color_temp_join)
-        if self._type == CONF_COLOR_HS:
-            self._hub.remove_callback("a", self._color_h_join)
-            self._hub.remove_callback("a", self._color_s_join)
-
-    def process_bright_callback(self, sigtype, join, value):
-        self._brightness = value*255/100
-        self.async_write_ha_state()
-
-    def process_color_temp_callback(self, sigtype, join, value):
-        if value > 0:
-            self._color_temp = color.color_temperature_kelvin_to_mired(value)
-        self.async_write_ha_state()
-
-    def process_color_callback(self, sigtype, join, value):
-        if join == self._color_h_join:
-            self._color_hs = (float(value), float(self._color_hs[1]))
-        if join == self._color_s_join:
-            self._color_hs = (float(self._color_hs[0]), float(value))
-        self.async_write_ha_state()
-
-    @property
-    def available(self):
-        return self._hub.is_available()
-
-    @property
-    def name(self):
-        return self._name
-
-    @property
-    def supported_features(self):
-        return self._supported_features
-
-    @property
-    def should_poll(self):
-        return False
-
-    @property
-    def brightness(self):
-        if self._brightness > 0:
-            return self._brightness
-        else:
-            return 0
-
-    @property
-    def supported_color_modes(self):
-        return self._supported_colormodes
-
-    @property
-    def color_mode(self):
-        return self._color_mode
-
-    @property
-    def color_temp(self):
-        return self._color_temp
-
-    @property
-    def hs_color(self):
-        return self._color_hs
-
-    @property
-    def min_mireds(self):
-        return self._color_temp_min
-
-    @property
-    def max_mireds(self):
-        return self._color_temp_max
-
-    @property
-    def is_on(self):
-        if self._brightness > 0:
-            return True
-        else:
-            return False
+        await self._hub.remove_callback("a", self._brightness_fb_join)
 
     async def async_turn_on(self, **kwargs):
-        _LOGGER.info(f"on..{kwargs}")
-        if "brightness" in kwargs:
-            self._save_brightness = int(kwargs["brightness"]*100/255)
-            self._hub.set_analog(self._brightness_join, self._save_brightness)
-        if "color_temp" in kwargs:
-            self._hub.set_analog(
-                self._color_temp_join,
-                round(color.color_temperature_mired_to_kelvin(
-                    int(kwargs["color_temp"]))/100)*100
-            )
-        if "hs_color" in kwargs:
-            self._hub.set_analog(
-                self._color_h_join,
-                int(kwargs["hs_color"][0])
-            )
-            self._hub.set_analog(
-                self._color_s_join,
-                int(kwargs["hs_color"][1])
-            )
-
+        if ATTR_BRIGHTNESS in kwargs:
+            self._hub.set_analog(self._brightness_join, int(
+                kwargs[ATTR_BRIGHTNESS]*65535/255))
         else:
-            self._hub.set_analog(self._brightness_join, self._save_brightness)
-        await self.async_update_ha_state()
+            if not bool(self._attr_brightness):
+                self._hub.set_analog(self._brightness_join, 65535)
 
     async def async_turn_off(self, **kwargs):
         self._hub.set_analog(self._brightness_join, 0)
-        await self.async_update_ha_state()
+
+    def process_bright_callback(self, sigtype, join, value):
+        self._attr_brightness = (value*255/65535)
+        self._attr_is_on = bool(self._attr_brightness)
+        self.schedule_update_ha_state()
+
+
+class ColorTempLight(BrightnessLight):
+    def __init__(self, client: XPanelClient, config: ConfigType, device_type):
+        super().__init__(client, config, device_type)
+        self._color_temp_join = config.get(CONF_COLOR_TEMP_JOIN)
+        self._color_temp_fb_join = config.get(CONF_COLOR_TEMP_FB_JOIN)
+        self._attr_max_color_temp_kelvin = config.get(
+            CONF_COLOR_TEMP_MAX) or 6500
+        self._attr_min_color_temp_kelvin = config.get(
+            CONF_COLOR_TEMP_MIN) or 3000
+        self._attr_color_temp_kelvin = self._hub.get_analog(
+            self._color_temp_fb_join)
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        await self._hub.register_callback(
+            "a", self._color_temp_fb_join, self.process_color_temp_callback
+        )
+
+    async def async_will_remove_from_hass(self):
+        await super().async_will_remove_from_hass()
+        await self._hub.remove_callback("a", self._color_temp_fb_join)
+
+    async def async_turn_on(self, **kwargs):
+        await super().async_turn_on(**kwargs)
+        if ATTR_COLOR_TEMP_KELVIN in kwargs:
+            self._hub.set_analog(
+                self._color_temp_join,
+                int(kwargs[ATTR_COLOR_TEMP_KELVIN])
+            )
+
+    async def async_turn_off(self, **kwargs):
+        await super().async_turn_off(**kwargs)
+
+    def process_color_temp_callback(self, sigtype, join, value):
+        if value > 0:
+            self._attr_color_temp_kelvin = int(value)
+        self.schedule_update_ha_state()
+
+
+
+CONST_LIGHT_DEVICE_ENTITY_MAP = {
+    CONF_SWITCH: SwitchLight,
+    CONF_BRIGHTNESS: BrightnessLight,
+    CONF_COLOR_TEMP: ColorTempLight,
+}
+
+
+async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
+    hub: XPanelClient = hass.data[DOMAIN][HUB]
+    device_type = config.get(CONF_TYPE)
+    if isinstance(device_type, str) and (device_type != ""):
+        light_list = []
+        _LOGGER.debug(f"light_device_type:{device_type}")
+        match device_type:
+            case 'dali_direct':
+                dali_direct: dict = config.get(CONF_DALI_DIRECT)
+                if not hub.dali_direct_tag:
+                    hub.dali_direct_tag = True
+                hub.dali_direct_exec_join = dali_direct.get(
+                    CONF_DALI_EXEC_JOIN)
+                # _LOGGER.debug(f"exec_join:{hub.dali_direct_exec_join}")
+                addr_join = dali_direct.get(CONF_DALI_2BYTE_ADDR_JOIN)
+                value_join = dali_direct.get(CONF_DALI_2BYTE_VALUE_JOIN)
+                fb_join = dali_direct.get(CONF_DALI_2BYTE_FB_JOIN)
+                dali_light_list = dali_direct.get(CONF_LIGHTS)
+                # _LOGGER.debug(
+                #     f'reg dali exec callback join:{hub.dali_direct_exec_join}')
+                await hub.register_callback(
+                    'd', hub.dali_direct_exec_join, hub.process_dali_direct_res_digital)
+                await hub.register_callback(
+                    'd', hub.dali_direct_exec_join+1, hub.process_dali_direct_res_digital)
+                # _LOGGER.debug(f"dali_lights:{dali_light_list}")
+                for dali_light in dali_light_list:
+                    light_type = dali_light.get(CONF_TYPE)
+                    light_list.append(CONST_LIGHT_DEVICE_ENTITY_MAP[light_type](
+                        hub, dali_light, light_type, addr_join, value_join, fb_join))
+
+            case _:
+                light_list = [CONST_LIGHT_DEVICE_ENTITY_MAP[device_type]
+                              (hub, config, device_type)]
+        async_add_entities(light_list)
