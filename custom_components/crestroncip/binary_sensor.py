@@ -3,64 +3,94 @@
 import voluptuous as vol
 import logging
 
-from homeassistant.helpers.entity import Entity
-from homeassistant.const import STATE_ON, STATE_OFF, CONF_NAME, CONF_DEVICE_CLASS
+from homeassistant.core import HomeAssistant
+from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySensorDeviceClass
+from homeassistant.const import CONF_NAME, CONF_TYPE
 import homeassistant.helpers.config_validation as cv
-
-from .const import HUB, DOMAIN, CONF_JOIN, CONF_IS_ON_JOIN
+from .const import DOMAIN, CONF_IS_ON_FB_JOIN
+from . import XPanelClient, HUB
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORM_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_NAME): cv.string,
-        vol.Required(CONF_IS_ON_JOIN): cv.positive_int,           
-        vol.Required(CONF_DEVICE_CLASS): cv.string,
+        vol.Required(CONF_IS_ON_FB_JOIN): cv.positive_int,
+        vol.Required(CONF_TYPE): cv.string,
     },
     extra=vol.ALLOW_EXTRA,
 )
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    hub = hass.data[DOMAIN][HUB]
-    entity = [CrestronBinarySensor(hub, config)]
-    async_add_entities(entity)
+CONF_DEV_CLASS = {'moving': BinarySensorDeviceClass.MOVING,
+                  'opening': BinarySensorDeviceClass.OPENING,
+                  'garage_door': BinarySensorDeviceClass.GARAGE_DOOR,
+                  'window': BinarySensorDeviceClass.WINDOW,
+                  'running': BinarySensorDeviceClass.RUNNING,
+                  'safety': BinarySensorDeviceClass.SAFETY,
+                  'sound': BinarySensorDeviceClass.SOUND,
+                  'vibration': BinarySensorDeviceClass.VIBRATION,
+                  'moisture': BinarySensorDeviceClass.MOISTURE,
+                  'gas': BinarySensorDeviceClass.GAS,
+                  'power': BinarySensorDeviceClass.POWER,
+                  'motion': BinarySensorDeviceClass.MOTION,
+                  'connect': BinarySensorDeviceClass.CONNECTIVITY}
+
+CONST_ADD_ONLINE = False
 
 
-class CrestronBinarySensor(Entity):
-    def __init__(self, hub, config):
+async def async_setup_platform(hass: HomeAssistant, config, async_add_entities: AddEntitiesCallback, discovery_info=None):
+    sensor_list = []
+    if HUB in hass.data[DOMAIN].keys():
+        hub: XPanelClient = hass.data[DOMAIN][HUB]
+        if isinstance(hub,XPanelClient):
+            if not callable(hub.online_callback_func):
+                    sensor_list.append(OnlineSensor(hub))
+            if len(config.keys()) > 0:
+                sensor_list.append(BinarySensor(hub, config))
+            
+    async_add_entities(sensor_list)
+
+
+class OnlineSensor(BinarySensorEntity):
+    def __init__(self, hub: XPanelClient):
         self._hub = hub
-        self._name = config.get(CONF_NAME)
-        self._join = config.get(CONF_IS_ON_JOIN)
-        self._device_class = config.get(CONF_DEVICE_CLASS)
+        self._attr_name = f'xpanel_{hub.host}_{hub.ip_id}_online'
+        self._attr_unique_id = f"b_sensor_{self._attr_name}"
+        self._attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+        self._attr_is_on = False
+        self._hub.online_callback_func = self.process_callback
 
     async def async_added_to_hass(self):
-        self._hub.register_callback(self.process_callback)
+        if isinstance(self._hub, XPanelClient):
+            self._attr_is_on = self._hub.connected
+        self.schedule_update_ha_state()
 
     async def async_will_remove_from_hass(self):
-        self._hub.remove_callback(self.process_callback)
+        pass
 
-    async def process_callback(self, cbtype, value):
-        self.async_write_ha_state()
+    def process_callback(self, online: bool):
+        self._attr_is_on = online
+        self.schedule_update_ha_state()
 
-    @property
-    def available(self):
-        return self._hub.is_available()
 
-    @property
-    def name(self):
-        return self._name
+class BinarySensor(BinarySensorEntity):
+    def __init__(self, hub: XPanelClient, config):
+        self._hub = hub
+        self._attr_name = config.get(CONF_NAME)
+        self._join = config.get(CONF_IS_ON_FB_JOIN)
+        self._attr_unique_id = f"{self._attr_name}_{self._join}"
+        self._cfg_type = config.get(CONF_TYPE)
+        self._attr_device_class = CONF_DEV_CLASS.get(self._cfg_type)
 
-    @property
-    def device_class(self):
-        return self._device_class
+    async def async_added_to_hass(self):
+        await self._hub.register_callback('d', self._join, self.process_callback)
+        self._attr_is_on = bool(self._hub.get_digital(self._join))
 
-    @property
-    def is_on(self):
-        return self._hub.get_digital(self._join)
+    async def async_will_remove_from_hass(self):
+        await self._hub.remove_callback('d', self._join, self.process_callback)
 
-    @property
-    def state(self):
-        if self._hub.get_digital(self._join):
-            return STATE_ON
-        else:
-            return STATE_OFF
+    def process_callback(self, cbtype, join, value):
+        _LOGGER.debug(f'binary sensor value change:{value}')
+        self._attr_is_on = bool(value)
+        self.schedule_update_ha_state()

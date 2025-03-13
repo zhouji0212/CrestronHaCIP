@@ -1,139 +1,200 @@
-"""Platform for Crestron Shades integration."""
-
+from typing import Any
+from . import XPanelClient,HomeAssistant
 import asyncio
 import logging
 import voluptuous as vol
 
 import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.event import call_later
 from homeassistant.components.cover import (
     CoverEntity,
-    DEVICE_CLASS_SHADE,
-    SUPPORT_OPEN,
-    SUPPORT_CLOSE,
-    SUPPORT_SET_POSITION,
-    SUPPORT_STOP,
-    STATE_OPENING,
-    STATE_OPEN,
-    STATE_CLOSING,
-    STATE_CLOSED,
+    CoverEntityFeature,
+    CoverDeviceClass
 )
 from homeassistant.const import CONF_NAME, CONF_TYPE
 from .const import (
     HUB,
     DOMAIN,
-    CONF_IS_OPENING_JOIN,
-    CONF_IS_CLOSING_JOIN,
-    CONF_IS_CLOSED_JOIN,
+    IS_CLOSED_FB_JOIN,
+    CONF_POSITION_JOIN,
+    CONF_POSITION_FB_JOIN,
+    CONF_OPEN_JOIN,
+    CONF_CLOSE_JOIN,
     CONF_STOP_JOIN,
-    CONF_POS_JOIN,
+    CONF_OPEN_TILT_JOIN,
+    CONF_CLOSE_TILT_JOIN,
+    CONF_STOP_TILT_JOIN,
+    CONF_TILT_POSITION_JOIN,
+    CONF_TILT_POSITION_FB_JOIN
 )
-from .crestroncipsync import CIPSocketClient
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORM_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_NAME): cv.string,
         vol.Required(CONF_TYPE): cv.string,
-        vol.Required(CONF_POS_JOIN): cv.positive_int,
-        vol.Required(CONF_IS_OPENING_JOIN): cv.positive_int,
-        vol.Required(CONF_IS_CLOSING_JOIN): cv.positive_int,
-        vol.Required(CONF_IS_CLOSED_JOIN): cv.positive_int,
+        vol.Optional(CONF_POSITION_JOIN): cv.positive_int,
+        vol.Optional(CONF_POSITION_FB_JOIN): cv.positive_int,
+        vol.Required(CONF_OPEN_JOIN): cv.positive_int,
+        vol.Required(CONF_CLOSE_JOIN): cv.positive_int,
         vol.Required(CONF_STOP_JOIN): cv.positive_int,
+        vol.Required(IS_CLOSED_FB_JOIN): cv.positive_int,
+        vol.Optional(CONF_OPEN_TILT_JOIN): cv.positive_int,
+        vol.Optional(CONF_CLOSE_TILT_JOIN): cv.positive_int,
+        vol.Optional(CONF_STOP_TILT_JOIN): cv.positive_int,
+        vol.Optional(CONF_TILT_POSITION_JOIN): cv.positive_int,
+        vol.Optional(CONF_TILT_POSITION_FB_JOIN): cv.positive_int,
     },
     extra=vol.ALLOW_EXTRA,
 )
+CONF_COVER_TYPE_MAP = {
+    'open_close': (
+        CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE | CoverEntityFeature.STOP
+    ),
+    'position': (
+        CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE | CoverEntityFeature.SET_POSITION | CoverEntityFeature.STOP
+    ),
+    'tilt': (
+        CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE | CoverEntityFeature.SET_POSITION | CoverEntityFeature.STOP
+        | CoverEntityFeature.SET_TILT_POSITION | CoverEntityFeature.STOP_TILT | CoverEntityFeature.OPEN_TILT
+        | CoverEntityFeature.CLOSE_TILT
+    ),
+
+}
 
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
+async def async_setup_platform(hass: HomeAssistant, config, async_add_entities, discovery_info=None):
     hub = hass.data[DOMAIN][HUB]
-    entity = [CrestronShade(hub, config)]
+    type = config.get(CONF_TYPE)
+    entity = []
+    if type == 'open_close':
+        entity = [OpenCloseCurtain(hub, config, type)]
+    elif type == 'position':
+        entity = [PositionCurtain(hub, config, type)]
+    elif type == 'tilt':
+        entity = [TiltCurtain(hub, config, type)]
     async_add_entities(entity)
 
 
-class CrestronShade(CoverEntity):
-    def __init__(self, client: CIPSocketClient, config):
+class OpenCloseCurtain(CoverEntity):
+    def __init__(self, client: XPanelClient, config, type: str):
         self._hub = client
-        if config.get(CONF_TYPE) == "shade":
-            self._device_class = DEVICE_CLASS_SHADE
-            self._supported_features = (
-                SUPPORT_OPEN | SUPPORT_CLOSE | SUPPORT_SET_POSITION | SUPPORT_STOP
-            )
-        self._should_poll = False
-
-        self._name = config.get(CONF_NAME)
-        self._is_opening_join = config.get(CONF_IS_OPENING_JOIN)
-        self._is_closing_join = config.get(CONF_IS_CLOSING_JOIN)
-        self._is_closed_join = config.get(CONF_IS_CLOSED_JOIN)
+        self._open_join = config.get(CONF_OPEN_JOIN)
+        self._close_join = config.get(CONF_CLOSE_JOIN)
         self._stop_join = config.get(CONF_STOP_JOIN)
-        self._pos_join = config.get(CONF_POS_JOIN)
-        self._tilt_join = 10
-        self._current_cover_position = self._hub.get_analog(
-            self._pos_join)
-        self._current_cover_tilt_position = self._hub.get_analog(
-            self._tilt_join)
-        self._is_closed = self._hub.get_digital(self._is_closed_join)
-        self._is_opening = self._hub.get_digital(self._is_opening_join)
-        self._is_closing = self._hub.get_digital(self._is_closing_join)
+        self._attr_name = config.get(CONF_NAME)
+        self._attr_device_class = CoverDeviceClass.CURTAIN
+        self._attr_unique_id = f"{self._attr_name}_{self._attr_device_class}_{self._stop_join}"
+        self._attr_supported_features = CONF_COVER_TYPE_MAP[type]
+        self._attr_should_poll = False
+        self._is_closed_fb_join = config.get(IS_CLOSED_FB_JOIN)
+        self._attr_current_cover_position = 50
+        self._attr_is_closed = self._hub.get_digital(self._is_closed_fb_join)
 
     async def async_added_to_hass(self):
-        self._hub.register_callback(self.process_callback)
+        await self._hub.register_callback(
+            "d", self._is_closed_fb_join, self.curtain_is_closed_callback)
+        self._is_closed = self._hub.get_digital(self._is_closed_fb_join)
+        self.schedule_update_ha_state()
 
     async def async_will_remove_from_hass(self):
-        self._hub.remove_callback(self.process_callback)
+        await self._hub.remove_callback(self.curtain_is_closed_callback)
 
-    async def process_callback(self, cbtype, value):
-        self.async_write_ha_state()
-
-    @property
-    def available(self):
-        return self._hub.is_available()
-
-    @property
-    def name(self):
-        return self._name
-
-    @property
-    def device_class(self):
-        return self._device_class
-
-    @property
-    def supported_features(self):
-        return self._supported_features
-
-    @property
-    def should_poll(self):
-        return self._should_poll
-
-    @property
-    def current_cover_tilt_position(self):
-        return self._current_cover_tilt_position
-
-    @property
-    def current_cover_position(self):
-        return self._current_cover_position
-
-    @property
-    def is_opening(self):
-        return self._is_opening
-
-    @property
-    def is_closing(self):
-        return self._is_closing
-
-    @property
-    def is_closed(self):
-        return self._is_closed
-
-    async def async_set_cover_position(self, **kwargs):
-        self._hub.set_analog(self._pos_join, int(kwargs["position"]) * 655)
+    def curtain_is_closed_callback(self, sigtype, join, value):
+        self._attr_is_closed = value
+        self.async_schedule_update_ha_state()
 
     async def async_open_cover(self, **kwargs):
-        self._hub.set_analog(self._pos_join, 0xFFFF)
+        self._hub.pulse(self._open_join)
+        self._attr_is_closed = False
+        self.async_schedule_update_ha_state()
 
     async def async_close_cover(self, **kwargs):
-        self._hub.set_analog(self._pos_join, 0)
+        self._hub.pulse(self._close_join)
+        self._attr_is_closed = True
+        self.async_schedule_update_ha_state()
 
     async def async_stop_cover(self, **kwargs):
-        self._hub.set_digital(self._stop_join, 1)
-        call_later(self.hass, 0.2, self._hub.set_digital(self._stop_join, 0))
+        self._hub.pulse(self._stop_join)
+        await asyncio.sleep(0.5)
+        self._attr_is_closed = self._hub.get_digital(self._is_closed_fb_join)
+        self.async_schedule_update_ha_state()
+
+
+class PositionCurtain(OpenCloseCurtain):
+    def __init__(self, client: XPanelClient, config, device_type: str):
+        super().__init__(client, config, device_type)
+        self._pos_join = config.get(CONF_POSITION_JOIN)
+        self._pos_join_fb = config.get(CONF_POSITION_FB_JOIN)
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        await self._hub.register_callback(
+            "a", self._pos_join_fb, self.curtain_position_callback)
+        self._attr_current_cover_position = self._hub.get_analog(
+            self._pos_join_fb)
+        self._attr_is_closed = self._hub.get_digital(self._is_closed_fb_join)
+        self.schedule_update_ha_state()
+
+    async def async_will_remove_from_hass(self):
+        await super().async_will_remove_from_hass()
+        await self._hub.remove_callback("a", self._pos_join_fb)
+
+    async def async_set_cover_position(self, **kwargs):
+        position = int(kwargs["position"])
+        self._attr_current_cover_position = position
+        self._hub.set_analog(self._pos_join, position)
+        self._attr_is_closed = not bool(position)
+        self.schedule_update_ha_state()
+
+    def curtain_position_callback(self, sigtype, join, value):
+        self._attr_is_closed = not bool(value)
+        self._attr_current_cover_position = value
+        self.schedule_update_ha_state()
+
+    async def async_stop_cover(self, **kwargs):
+        self._hub.pulse(self._stop_join)
+        self.schedule_update_ha_state()
+
+
+class TiltCurtain(PositionCurtain):
+    def __init__(self, client: XPanelClient, config, device_type: str):
+        super().__init__(client, config, device_type)
+        self._attr_device_class = CoverDeviceClass.BLIND
+        self._cover_tilt_open_join = config.get(CONF_OPEN_TILT_JOIN)
+        self._cover_tilt_close_join = config.get(CONF_CLOSE_TILT_JOIN)
+        self._cover_tilt_stop_join = config.get(CONF_STOP_TILT_JOIN)
+        self._cover_tilt_pos_join = config.get(CONF_TILT_POSITION_JOIN)
+        self._cover_tilt_pos_join_fb = config.get(CONF_TILT_POSITION_FB_JOIN)
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        await self._hub.register_callback(
+            "a", self._cover_tilt_pos_join, self.curtain_tilt_callback)
+        self._attr_current_cover_tilt_position = self._hub.get_analog(
+            self._cover_tilt_pos_join_fb)
+
+    async def async_will_remove_from_hass(self):
+        await super().async_will_remove_from_hass()
+        await self._hub.remove_callback("a", self._cover_tilt_pos_join_fb)
+
+    async def async_open_cover_tilt(self, **kwargs):
+        self._hub.pulse(self._cover_tilt_open_join)
+        self._attr_current_cover_tilt_position = 100
+        self.schedule_update_ha_state()
+
+    async def async_close_cover_tilt(self, **kwargs):
+        self._hub.pulse(self._cover_tilt_close_join)
+        self._attr_current_cover_tilt_position = 0
+        self.schedule_update_ha_state()
+
+    async def async_stop_cover_tilt(self, **kwargs):
+        self._hub.pulse(self._cover_tilt_stop_join)
+
+    async def async_set_cover_tilt_position(self, **kwargs: Any):
+        # _LOGGER.debug(f'tilt:{kwargs}')
+        self._hub.set_analog(self._cover_tilt_pos_join,
+                             int(kwargs["tilt_position"]))
+
+    def curtain_tilt_callback(self, sigtype, join, value):
+        self._attr_current_cover_tilt_position = value
+        self.async_schedule_update_ha_state()

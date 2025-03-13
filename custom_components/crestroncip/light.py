@@ -9,13 +9,7 @@ from homeassistant.components.light import (
     LightEntity,
     ColorMode,
     ATTR_BRIGHTNESS,
-    ATTR_EFFECT,
-    ATTR_COLOR_TEMP_KELVIN,
-    ATTR_RGB_COLOR,
-    ATTR_RGBW_COLOR,
-    ATTR_RGBWW_COLOR,
-    ATTR_XY_COLOR)
-from homeassistant.components.light.const import LightEntityFeature
+    ATTR_COLOR_TEMP_KELVIN)
 from homeassistant.const import CONF_NAME, CONF_TYPE
 from .const import (
     HUB,
@@ -30,8 +24,7 @@ from .const import (
     CONF_COLOR_COOL_JOIN,
     CONF_COLOR_WARM_JOIN,
     CONF_COLOR_TEMP_MAX,
-    CONF_COLOR_TEMP_MIN,
-    CONF_LIGHTS)
+    CONF_COLOR_TEMP_MIN)
 from . import XPanelClient
 from homeassistant.util import color
 _LOGGER = logging.getLogger(__name__)
@@ -241,33 +234,6 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     hub: XPanelClient = hass.data[DOMAIN][HUB]
     device_type = config.get(CONF_TYPE)
     if isinstance(device_type, str) and (device_type != ""):
-        light_list = []
-        _LOGGER.debug(f"light_device_type:{device_type}")
-        match device_type:
-            case 'dali_direct':
-                dali_direct: dict = config.get(CONF_DALI_DIRECT)
-                if not hub.dali_direct_tag:
-                    hub.dali_direct_tag = True
-                hub.dali_direct_exec_join = dali_direct.get(
-                    CONF_DALI_EXEC_JOIN)
-                # _LOGGER.debug(f"exec_join:{hub.dali_direct_exec_join}")
-                addr_join = dali_direct.get(CONF_DALI_2BYTE_ADDR_JOIN)
-                value_join = dali_direct.get(CONF_DALI_2BYTE_VALUE_JOIN)
-                fb_join = dali_direct.get(CONF_DALI_2BYTE_FB_JOIN)
-                dali_light_list = dali_direct.get(CONF_LIGHTS)
-                # _LOGGER.debug(
-                #     f'reg dali exec callback join:{hub.dali_direct_exec_join}')
-                await hub.register_callback(
-                    'd', hub.dali_direct_exec_join, hub.process_dali_direct_res_digital)
-                await hub.register_callback(
-                    'd', hub.dali_direct_exec_join+1, hub.process_dali_direct_res_digital)
-                # _LOGGER.debug(f"dali_lights:{dali_light_list}")
-                for dali_light in dali_light_list:
-                    light_type = dali_light.get(CONF_TYPE)
-                    light_list.append(CONST_LIGHT_DEVICE_ENTITY_MAP[light_type](
-                        hub, dali_light, light_type, addr_join, value_join, fb_join))
-
-            case _:
-                light_list = [CONST_LIGHT_DEVICE_ENTITY_MAP[device_type]
-                              (hub, config, device_type)]
+        light_list = [CONST_LIGHT_DEVICE_ENTITY_MAP[device_type]
+                        (hub, config, device_type)]
         async_add_entities(light_list)
